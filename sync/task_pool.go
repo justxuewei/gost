@@ -43,9 +43,9 @@ type GenericTaskPool interface {
 	AddTaskAlways(t task)
 	// AddTaskBalance add task to idle queue
 	AddTaskBalance(t task)
-	// Close use to close the task pool
+	// Close uses to close the task pool
 	Close()
-	// IsClosed use to check pool status.
+	// IsClosed uses to check pool status.
 	IsClosed() bool
 }
 
@@ -56,7 +56,7 @@ func goSafely(fn func()) {
 /////////////////////////////////////////
 // Task Pool
 /////////////////////////////////////////
-// task pool: manage task ts
+
 type TaskPool struct {
 	TaskPoolOptions
 
@@ -91,7 +91,7 @@ func NewTaskPool(opts ...TaskPoolOption) GenericTaskPool {
 	return p
 }
 
-// start task pool
+// start dispatches workers to different queues based on workerID
 func (p *TaskPool) start() {
 	for i := 0; i < p.tQPoolSize; i++ {
 		p.wg.Add(1)
@@ -101,10 +101,11 @@ func (p *TaskPool) start() {
 	}
 }
 
+// safeRun initializes a worker with error handler
 func (p *TaskPool) safeRun(workerID int, q chan task) {
 	gxruntime.GoSafely(nil, false,
 		func() {
-			err := p.run(int(workerID), q)
+			err := p.run(workerID, q)
 			if err != nil {
 				// log error to stderr
 				log.Printf("gost/TaskPool.run error: %s", err.Error())
@@ -114,7 +115,7 @@ func (p *TaskPool) safeRun(workerID int, q chan task) {
 	)
 }
 
-// worker
+// run assigns a task received from queue to the current worker
 func (p *TaskPool) run(id int, q chan task) error {
 	defer p.wg.Done()
 
@@ -125,6 +126,7 @@ func (p *TaskPool) run(id int, q chan task) error {
 
 	for {
 		select {
+		// pool was closed
 		case <-p.done:
 			if 0 < len(q) {
 				return fmt.Errorf("task worker %d exit now while its task buffer length %d is greater than 0",
@@ -132,13 +134,13 @@ func (p *TaskPool) run(id int, q chan task) error {
 			}
 
 			return nil
-
+		// perform task received from queue
 		case t, ok = <-q:
 			if ok {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							fmt.Fprintf(os.Stderr, "%s goroutine panic: %v\n%s\n",
+							_, _ = fmt.Fprintf(os.Stderr, "%s goroutine panic: %v\n%s\n",
 								time.Now(), r, string(debug.Stack()))
 						}
 					}()
@@ -149,7 +151,9 @@ func (p *TaskPool) run(id int, q chan task) error {
 	}
 }
 
-// return false when the pool is stop
+// AddTask adds task to a queue randomly.
+// Goroutine will be blocked if the queue is full.
+// It returns false when the pool is stopped.
 func (p *TaskPool) AddTask(t task) (ok bool) {
 	idx := atomic.AddUint32(&p.idx, 1)
 	id := idx % uint32(p.tQNumber)
@@ -163,6 +167,9 @@ func (p *TaskPool) AddTask(t task) (ok bool) {
 	}
 }
 
+// AddTaskAlways adds task to a queue randomly.
+// Goroutine will not be blocked if the queue is full. A new worker will be initialized and deal with the task
+// immediately.
 func (p *TaskPool) AddTaskAlways(t task) {
 	id := atomic.AddUint32(&p.idx, 1) % uint32(p.tQNumber)
 
@@ -174,7 +181,9 @@ func (p *TaskPool) AddTaskAlways(t task) {
 	}
 }
 
-// do it immediately when no idle queue
+// AddTaskBalance adds task to an idle queue.
+// Goroutine will not be blocked if most of the queues are full. A new worker will be initialized and deal with the task
+// immediately.
 func (p *TaskPool) AddTaskBalance(t task) {
 	length := len(p.qArray)
 
@@ -191,7 +200,6 @@ func (p *TaskPool) AddTaskBalance(t task) {
 	goSafely(t)
 }
 
-// stop all tasks
 func (p *TaskPool) stop() {
 	select {
 	case <-p.done:
@@ -203,7 +211,6 @@ func (p *TaskPool) stop() {
 	}
 }
 
-// check whether the session has been closed.
 func (p *TaskPool) IsClosed() bool {
 	select {
 	case <-p.done:
